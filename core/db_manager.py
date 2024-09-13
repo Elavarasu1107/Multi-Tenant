@@ -40,6 +40,12 @@ class DatabaseManager:
         await self.session.refresh(instance)
         return instance
 
+    async def create_instance(self, **payload):
+        instance = self._model(**payload)
+        self.session.add(instance)
+        await self.session.flush()
+        return instance
+
     async def add(self, instance):
         self.session.add(instance)
         await self.session.commit()
@@ -89,6 +95,13 @@ class DatabaseManager:
         if instance:
             return instance
         instance = await self.create(**payload)
+        return instance
+
+    async def get_or_create_instance(self, **payload):
+        instance = await self.get_or_none(**payload)
+        if instance:
+            return instance
+        instance = await self.create_instance(**payload)
         return instance
 
     async def filter(self, **payload):

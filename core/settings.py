@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     JWT_ACCESS_EXPIRY: int
     JWT_REFRESH_EXPIRY: int
     SECRET_KEY: str
+    EMAIL_KEY: str
+    EMAIL_USER: str
 
 
 settings = Settings()

@@ -7,6 +7,7 @@ from core.db_manager import DatabaseManager
 from .models import Member, Organisation, Role, User, get_db_session
 from .schemas import *
 from .tokens import Audience, JWTUtils
+from .utils import send_mail
 
 user = APIRouter(prefix="/api/user", tags=["User"])
 
@@ -20,42 +21,60 @@ user = APIRouter(prefix="/api/user", tags=["User"])
 async def register_user(
     body: RegisterUserSchema, request: Request, db: DatabaseManager = Depends(get_db_session)
 ):
-    payload = body.model_dump()
-    email = payload.get("email")
-    password = payload.get("password")
-    is_user_exist = await db.model(User).get_or_none(email=email)
-    if is_user_exist:
-        raise SQLAlchemyError("User already exists")
-    user: User = await db.model(User).create(email=email, password=password)
+    async with db.session.begin():
+        try:
+            payload = body.model_dump()
+            email = payload.get("email")
+            password = payload.get("password")
+            is_user_exist = await db.model(User).get_or_none(email=email)
+            if is_user_exist:
+                raise SQLAlchemyError("User already exists")
+            user: User = await db.model(User).create_instance(email=email, password=password)
 
-    org_name = payload.get("org_name")
-    organisation = await db.model(Organisation).get_or_create(name=org_name)
+            org_name = payload.get("org_name")
+            organisation = await db.model(Organisation).get_or_create_instance(name=org_name)
 
-    role = payload.get("role")
-    description = payload.get("description")
+            role = payload.get("role")
+            description = payload.get("description")
 
-    role = await db.model(Role).get_or_create(name=role, org_id=organisation.id)
-    if description:
-        role.description = description
-        await db.save()
+            role = await db.model(Role).get_or_create_instance(name=role, org_id=organisation.id)
+            if description:
+                role.description = description
+                # await db.save()
 
-    invitation_payload = {
-        "user_id": user.id,
-        "org_id": organisation.id,
-        "role_id": role.id,
-        "aud": Audience.INVITE.value,
-    }
+            invitation_payload = {
+                "user_id": user.id,
+                "org_id": organisation.id,
+                "role_id": role.id,
+                "aud": Audience.INVITE.value,
+            }
 
-    token = await JWTUtils.generate_access_token(invitation_payload, exp=15)
-    url = request.url_for("invite_member", token=token)
+            token = await JWTUtils.generate_access_token(invitation_payload, exp=15)
+            url = request.url_for("invite_member", token=token)
 
-    user_data = user.to_dict
-    user_data.update(organisation=organisation.to_dict, role=role.to_dict)
-    return {
-        "message": "User Registered and Member invitation send to registered E-mail!",
-        "status": "success",
-        "data": user_data,
-    }
+            status_code = await send_mail(
+                to_email=user.email, subject="MultiTenant Member Invitation", content=str(url)
+            )
+            if status_code >= 400:
+                await db.session.rollback()
+                raise HTTPException(
+                    detail="Error occured when trying to send mail",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            await db.save()
+
+            user_data = user.to_dict
+            user_data.update(organisation=organisation.to_dict, role=role.to_dict)
+            return {
+                "message": "User Registered and Member invitation send to registered E-mail!",
+                "status": "success",
+                "data": user_data,
+            }
+        except Exception as e:
+            raise HTTPException(
+                detail=str(e), status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            ) from e
 
 
 @user.post(
@@ -82,6 +101,18 @@ async def login_user(
     refresh = await JWTUtils.generate_refresh_token(payload=token_payload)
 
     # response.set_cookie(key="refresh_token", value=refresh, secure=False)
+
+    status_code = await send_mail(
+        to_email=user.email,
+        subject="MultiTenant Login Alert",
+        content="""We noticed a new sign-in to your MultiTenant Account""",
+    )
+    if status_code >= 400:
+        await db.session.rollback()
+        raise HTTPException(
+            detail="Error occured when trying to send mail",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
     return {
         "message": "Login Successfull",
         "status": "success",
@@ -90,7 +121,9 @@ async def login_user(
 
 
 @user.post("/forgotPassword")
-async def forgot_password(body: ForgotPassSchema, db: DatabaseManager = Depends(get_db_session)):
+async def forgot_password(
+    body: ForgotPassSchema, request: Request, db: DatabaseManager = Depends(get_db_session)
+):
     user = await db.model(User).get_or_none(email=body.email)
     if not user:
         return JSONResponse(
@@ -102,6 +135,18 @@ async def forgot_password(body: ForgotPassSchema, db: DatabaseManager = Depends(
         )
     token_payload = {"user_id": user.id, "aud": Audience.RE_PASS.value}
     token = await JWTUtils.generate_access_token(payload=token_payload, exp=5)
+    url = request.url_for("reset_password", token=token)
+
+    status_code = await send_mail(
+        to_email=user.email, subject="MultiTenant Reset Password", content=str(url)
+    )
+    if status_code >= 400:
+        await db.session.rollback()
+        raise HTTPException(
+            detail="Error occured when trying to send mail",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
     return {
         "message": "Reset link sent to registered email",
         "status": "success",
@@ -136,12 +181,44 @@ async def reset_password(
 
     user.password = user.set_password(body.new_password)
     await db.save()
-    return {"message": "Password reset successful", "status": "success"}
+
+    status_code = await send_mail(
+        to_email=user.email,
+        subject="MultiTenant Password Change Alert",
+        content="""Recently password associated with this mail id has been changed.""",
+    )
+    if status_code >= 400:
+        await db.session.rollback()
+        raise HTTPException(
+            detail="Error occured when trying to send mail",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    return {"message": "Password reset successful", "status": "success", "data": {}}
 
 
-@user.post("/inviteMember/{token}")
-async def invite_member(token: str):
-    pass
+@user.get("/inviteMember/{token}")
+async def invite_member(
+    token: str, request: Request, db: DatabaseManager = Depends(get_db_session)
+):
+    if not token:
+        raise HTTPException(detail="Token not found", status_code=status.HTTP_404_NOT_FOUND)
+
+    payload = await JWTUtils.decode_token(token=token, aud=Audience.INVITE.value, request=request)
+    if "user_id" not in payload or "org_id" not in payload or "role_id" not in payload:
+        raise HTTPException(detail="Improper data provided", status_code=status.HTTP_403_FORBIDDEN)
+
+    user_id = payload["user_id"]
+    org_id = payload["org_id"]
+    role_id = payload["role_id"]
+
+    await db.model(Member).create(user_id=user_id, org_id=org_id, role_id=role_id)
+
+    return {
+        "message": "Successfully added as member to organisation",
+        "status": "success",
+        "data": {},
+    }
 
 
 @user.delete("/deleteMember/{id}")

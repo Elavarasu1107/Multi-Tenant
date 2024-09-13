@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, model_validator
 
 
 class RegisterUserSchema(BaseModel):
@@ -12,6 +12,23 @@ class RegisterUserSchema(BaseModel):
 class LoginUserSchema(BaseModel):
     email: EmailStr
     password: str
+
+
+class ForgotPassSchema(BaseModel):
+    email: EmailStr
+
+
+class ResetPassSchema(BaseModel):
+    new_password: str
+    confirm_password: str
+
+    @model_validator(mode="after")
+    def check_password_match(self):
+        new = self.new_password
+        confirm = self.confirm_password
+        if new is not None and confirm is not None and new != confirm:
+            raise ValueError("passwords do not match")
+        return self
 
 
 class BaseResponseSchema(BaseModel):

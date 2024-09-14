@@ -31,6 +31,12 @@ class ResetPassSchema(BaseModel):
         return self
 
 
+class UpdateMemberSchema(BaseModel):
+    user_id: int
+    org_id: int
+    role_id: int
+
+
 class BaseResponseSchema(BaseModel):
     message: str
     status: str = "success"

@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -221,11 +223,65 @@ async def invite_member(
     }
 
 
-@user.delete("/deleteMember/{id}")
-async def delete_member(id: int, db: DatabaseManager = Depends(get_db_session)):
-    pass
+@user.delete("/{user_id}/deleteMember/{member_id}")
+async def delete_member(
+    user_id: int, member_id: int, db: DatabaseManager = Depends(get_db_session)
+):
+    if not user_id or member_id:
+        raise HTTPException(
+            detail="Improper data provided", status_code=status.HTTP_400_BAD_REQUEST
+        )
+
+    member: Member = await db.model(Member).get_or_none(id=member_id)
+    if not member:
+        raise HTTPException(
+            detail="Invalid member details", status_code=status.HTTP_400_BAD_REQUEST
+        )
+
+    if member.user_id != user_id:
+        raise HTTPException(detail="You are not a member", status_code=status.HTTP_400_BAD_REQUEST)
+
+    await db.model(Member).delete(id=member_id)
+
+    return {
+        "message": "Successfully Membership Removed",
+        "status": "success",
+        "data": {},
+    }
 
 
-@user.post("/updateRole")
-async def update_member_role():
-    pass
+@user.patch("/updateRole")
+async def update_member_role(
+    body: UpdateMemberSchema, db: DatabaseManager = Depends(get_db_session)
+):
+    payload = body.model_dump()
+    org_id = payload.get("org_id")
+    user_id = payload.get("user_id")
+    role_id = payload.get("role_id")
+
+    role = await db.model(Role).get_or_none(id=role_id)
+
+    if not role:
+        raise HTTPException(detail="Role not found", status_code=status.HTTP_404_NOT_FOUND)
+
+    member = await db.model(Member).get_or_none(org_id=org_id, user_id=user_id)
+
+    if not member:
+        raise HTTPException(detail="Member not found", status_code=status.HTTP_404_NOT_FOUND)
+
+    if member.role_id == role_id:
+        return {
+            "message": "Role update to date",
+            "status": "success",
+            "data": {},
+        }
+
+    member.role_id = role.id
+
+    await db.save()
+
+    return {
+        "message": "Successfully Role has been Updated",
+        "status": "success",
+        "data": {},
+    }
